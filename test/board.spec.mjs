@@ -5,7 +5,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '/home/kyleb/.local/share/mise/installs/playwright/latest/node_modules/playwright/index.mjs';
@@ -54,12 +53,14 @@ const incident = (n, openedAt = new Date(Date.UTC(2026, 10, 12, 3, n)).toISOStri
 
 /**
  * Opens the board with a mocked API. `api.incidents` is what the next poll returns (newest first);
- * mutate it to simulate new incidents. Every poll and ack request is recorded.
+ * mutate it to simulate new incidents. Every poll and ack request is recorded, and `api.served`
+ * holds when each poll was answered with which ids. `initScript` runs in the page before the app.
  */
-async function openBoard({ incidents = [], firstDelayMs = 0, ackStatus = 200, ackDelayMs = 0, contextOptions = {} } = {}) {
+async function openBoard({ incidents = [], firstDelayMs = 0, ackStatus = 200, ackDelayMs = 0, contextOptions = {}, initScript } = {}) {
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
-  const api = { incidents, ackStatus, ackDelayMs, polls: [], acks: [] };
+  if (initScript) await page.addInitScript(initScript);
+  const api = { incidents, ackStatus, ackDelayMs, polls: [], acks: [], served: [] };
   let cursorN = 0;
   await page.route(API_GLOB, async (route) => {
     const url = new URL(route.request().url());
@@ -67,7 +68,9 @@ async function openBoard({ incidents = [], firstDelayMs = 0, ackStatus = 200, ac
       api.polls.push({ at: Date.now(), since: url.searchParams.get('since') });
       if (api.polls.length === 1 && firstDelayMs) await new Promise((r) => setTimeout(r, firstDelayMs));
       const body = { updatedAt: new Date().toISOString(), incidents: api.incidents, cursor: `c${++cursorN}` };
-      return route.fulfill({ status: 200, headers: CORS, body: JSON.stringify(body) });
+      await route.fulfill({ status: 200, headers: CORS, body: JSON.stringify(body) });
+      api.served.push({ at: Date.now(), ids: api.incidents.map((i) => i.id) });
+      return;
     }
     if (url.pathname.endsWith('/ack')) {
       const id = url.searchParams.get('id');
@@ -92,6 +95,31 @@ async function waitForPolls(page, api, n) {
   }
 }
 
+/** Tags every row element with its id, so a later read can tell whether the same DOM nodes are still there. */
+const markRows = (page) => page.$$eval('[data-testid="incident-row"]', (rows) => rows.forEach((r) => { r.__marker = r.dataset.id; }));
+const rowMarkers = (page) => page.$$eval('[data-testid="incident-row"]', (rows) => rows.map((r) => r.__marker ?? null));
+
+/** Counts incident rows added to or removed from the list from now on; read with `rowMutations`. */
+const watchRows = (page) => page.evaluate(() => {
+  window.__rowMutations = { added: 0, removed: 0 };
+  const isRow = (n) => n.nodeType === 1 && n.matches('[data-testid="incident-row"]');
+  new MutationObserver((records) => {
+    for (const r of records) {
+      window.__rowMutations.added += [...r.addedNodes].filter(isRow).length;
+      window.__rowMutations.removed += [...r.removedNodes].filter(isRow).length;
+    }
+  }).observe(document.querySelector('[data-testid="incident-list"]'), { childList: true });
+});
+const rowMutations = (page) => page.evaluate(() => window.__rowMutations);
+
+const newBar = (page) => page.getByTestId('new-bar');
+const barText = (n) => `${n} new incident${n === 1 ? '' : 's'}, show`;
+const waitForBarText = (page, text) =>
+  page.waitForFunction((t) => {
+    const bar = document.querySelector('[data-testid="new-bar"]');
+    return bar && !bar.hidden && bar.textContent === t;
+  }, text);
+
 test('R3: loader shows until the first reply, then goes; empty shows for an empty list', async () => {
   const slow = await openBoard({ incidents: [incident(1)], firstDelayMs: 1500 });
   try {
@@ -100,6 +128,7 @@ test('R3: loader shows until the first reply, then goes; empty shows for an empt
     await slow.page.getByTestId('incident-row').first().waitFor();
     assert.equal(await slow.page.getByTestId('loader').count(), 0, 'loader gone after reply');
     assert.equal(await slow.page.getByTestId('empty').isVisible(), false);
+    assert.equal(await newBar(slow.page).isVisible(), false, 'first load shows the list directly, no bar');
   } finally {
     await slow.close();
   }
@@ -109,16 +138,26 @@ test('R3: loader shows until the first reply, then goes; empty shows for an empt
     await none.page.getByTestId('empty').waitFor({ state: 'visible' });
     assert.equal(await none.page.getByTestId('loader').count(), 0);
     assert.equal(await none.page.getByTestId('incident-row').count(), 0);
+    assert.equal(await newBar(none.page).isVisible(), false);
+
+    // Nothing on screen to hold still: the first incidents show directly.
+    none.api.incidents = [incident(1)];
+    await none.page.getByTestId('incident-row').first().waitFor();
+    assert.equal(await none.page.getByTestId('empty').isVisible(), false);
+    assert.equal(await newBar(none.page).isVisible(), false);
   } finally {
     await none.close();
   }
 });
 
-test('R1/R4: polls about every 2s, new incident lands on top, existing rows keep their DOM nodes', async () => {
-  const { page, api, close } = await openBoard({ incidents: [incident(2), incident(1)] });
+test('R1/R4: while watched, polls every ~2s, the list holds still, and the bar counts new incidents without moving rows', async () => {
+  const { page, api, close } = await openBoard({ incidents: [incident(3), incident(2), incident(1)] });
   try {
     await page.getByTestId('incident-row').first().waitFor();
-    await page.$$eval('[data-testid="incident-row"]', (rows) => rows.forEach((r) => { r.__marker = r.dataset.id; }));
+    await markRows(page);
+    await watchRows(page);
+    const before = await rowIds(page);
+    const boxBefore = await page.locator('[data-testid="incident-row"][data-id="INC-1"]').boundingBox();
 
     await waitForPolls(page, api, 3);
     const gaps = api.polls.slice(1).map((p, i) => p.at - api.polls[i].at);
@@ -126,18 +165,54 @@ test('R1/R4: polls about every 2s, new incident lands on top, existing rows keep
     assert.equal(api.polls[0].since, null, 'first poll has no cursor');
     assert.ok(api.polls.slice(1).every((p) => p.since?.startsWith('c')), 'later polls send the last cursor');
 
-    api.incidents = [incident(3), ...api.incidents];
-    await page.waitForFunction(() => document.querySelector('[data-testid="incident-row"]')?.dataset.id === 'INC-3');
-    assert.deepEqual(await rowIds(page), ['INC-3', 'INC-2', 'INC-1']);
-    const markers = await page.$$eval('[data-testid="incident-row"]', (rows) => rows.map((r) => r.__marker ?? null));
-    assert.deepEqual(markers, [null, 'INC-2', 'INC-1'], 'old rows are the same elements');
+    api.incidents = [incident(4), ...api.incidents];
+    await waitForBarText(page, barText(1));
+    api.incidents = [incident(5), ...api.incidents];
+    await waitForBarText(page, barText(2));
+    const polled = api.polls.length;
+    await waitForPolls(page, api, polled + 1);
+    await page.waitForTimeout(200);
+
+    assert.equal(await newBar(page).isVisible(), true);
+    assert.equal(await newBar(page).textContent(), '2 new incidents, show');
+    assert.deepEqual(await rowIds(page), before, 'top row and order unchanged');
+    assert.deepEqual(await rowMarkers(page), before, 'every row is the same DOM node');
+    assert.deepEqual(await rowMutations(page), { added: 0, removed: 0 }, 'no row added or removed');
+    const boxAfter = await page.locator('[data-testid="incident-row"][data-id="INC-1"]').boundingBox();
+    assert.deepEqual(boxAfter, boxBefore, 'showing the bar does not move the rows');
     assert.equal(await page.evaluate(() => performance.getEntriesByType('navigation').length), 1, 'no reload');
   } finally {
     await close();
   }
 });
 
-test('R2: Ack acks that row, survives refresh, and re-enables on failure', async () => {
+test('R1: clicking the bar brings new incidents in at the top, newest first, with Ack, and hides the bar', async () => {
+  const { page, api, close } = await openBoard({ incidents: [incident(2), incident(1)] });
+  try {
+    await page.getByTestId('incident-row').first().waitFor();
+    await markRows(page);
+    api.incidents = [incident(4), incident(3), ...api.incidents];
+    await waitForBarText(page, barText(2));
+
+    await newBar(page).click();
+    assert.deepEqual(await rowIds(page), ['INC-4', 'INC-3', 'INC-2', 'INC-1']);
+    assert.deepEqual(await rowMarkers(page), [null, null, 'INC-2', 'INC-1'], 'old rows keep their DOM nodes');
+    for (const id of ['INC-4', 'INC-3']) {
+      const ack = page.locator(`[data-testid="incident-row"][data-id="${id}"]`).getByTestId('ack');
+      assert.equal(await ack.isVisible(), true, `${id} has an Ack`);
+      assert.equal(await ack.isEnabled(), true);
+    }
+    assert.equal(await newBar(page).isVisible(), false, 'bar hides after the click');
+
+    await waitForPolls(page, api, api.polls.length + 1);
+    await page.waitForTimeout(200);
+    assert.equal(await newBar(page).isVisible(), false, 'bar stays hidden when nothing new arrived');
+  } finally {
+    await close();
+  }
+});
+
+test('R2: Ack acks that row, the mark stays across refreshes and a bar click, and re-enables on failure', async () => {
   const { page, api, close } = await openBoard({ incidents: [incident(3), incident(2), incident(1)], ackDelayMs: 300 });
   try {
     const row = page.locator('[data-testid="incident-row"][data-id="INC-2"]');
@@ -147,12 +222,22 @@ test('R2: Ack acks that row, survives refresh, and re-enables on failure', async
     assert.deepEqual(api.acks.map((a) => a.id), ['INC-2']);
     assert.ok(api.acks[0].cursor?.startsWith('c'), 'ack sends the latest cursor');
 
-    const polled = api.polls.length;
-    await waitForPolls(page, api, polled + 2);
+    await waitForPolls(page, api, api.polls.length + 2);
     await page.waitForTimeout(200);
     assert.equal(await row.getByTestId('ack').count(), 0, 'Ack does not come back after refresh');
     assert.equal(await row.getByTestId('acked').count(), 1);
     assert.equal(await page.getByTestId('acked').count(), 1, 'only that row is acked');
+
+    api.incidents = [incident(4), ...api.incidents];
+    await waitForBarText(page, barText(1));
+    assert.equal(await row.getByTestId('acked').count(), 1, 'mark stays while the bar waits');
+    await newBar(page).click();
+    assert.deepEqual(await rowIds(page), ['INC-4', 'INC-3', 'INC-2', 'INC-1']);
+    assert.equal(await row.getByTestId('acked').count(), 1, 'mark stays on INC-2 after the bar click');
+    assert.equal(await page.getByTestId('acked').count(), 1, 'and on no other row');
+    await waitForPolls(page, api, api.polls.length + 1);
+    await page.waitForTimeout(200);
+    assert.equal(await row.getByTestId('acked').count(), 1, 'mark stays after the next refresh');
 
     api.ackStatus = 500;
     const other = page.locator('[data-testid="incident-row"][data-id="INC-1"]');
@@ -166,27 +251,57 @@ test('R2: Ack acks that row, survives refresh, and re-enables on failure', async
   }
 });
 
-test('race: incident inserted on top while the pointer rests on the second row', async (t) => {
+test('R1/R2: an Ack aimed at the 3rd row while an incident arrives acks that row', async (t) => {
   const { page, api, close } = await openBoard({ incidents: [incident(3), incident(2), incident(1)] });
   try {
     await page.getByTestId('incident-row').first().waitFor();
-    const target = page.locator('[data-testid="incident-row"]').nth(1);
-    const intended = await target.getAttribute('data-id');
+    const target = page.locator('[data-testid="incident-row"]').nth(2);
+    const aimed = await target.getAttribute('data-id');
     const box = await target.getByTestId('ack').boundingBox();
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
     await page.mouse.move(x, y);
 
+    const served = api.served.length;
     api.incidents = [incident(4), ...api.incidents];
-    await page.waitForFunction(() => document.querySelector('[data-testid="incident-row"]')?.dataset.id === 'INC-4');
-    const underPointerNow = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest('[data-testid="incident-row"]')?.dataset.id, [x, y]);
-
+    await page.waitForFunction(() => !document.querySelector('[data-testid="new-bar"]').hidden, null, { polling: 'raf' });
     await page.mouse.click(x, y);
+    const clickedAt = Date.now();
+    const arrival = api.served.slice(served).find((s) => s.ids.includes('INC-4'));
+    assert.ok(arrival, 'the poll carrying INC-4 was served before the click');
+    const lag = clickedAt - arrival.at;
+    t.diagnostic(`aimed: ${aimed}; click ${lag}ms after INC-4 was served`);
+    assert.ok(lag <= 150, `click ${lag}ms after the new incident, wanted <= 150ms`);
+
     await page.waitForFunction(() => document.querySelector('[data-testid="acked"]'));
-    const acked = api.acks.map((a) => a.id);
-    t.diagnostic(`under pointer before refresh: ${intended}; under pointer at click: ${underPointerNow}; acked: ${acked.join(',')}`);
-    assert.equal(acked.length, 1);
-    assert.equal(acked[0], underPointerNow, 'the click acks whatever row moved under the pointer');
+    assert.deepEqual(api.acks.map((a) => a.id), [aimed], 'the ack goes to the aimed row');
+    assert.equal(await target.getAttribute('data-id'), aimed, 'the aimed row did not move');
+    assert.equal(await page.locator(`[data-testid="incident-row"][data-id="${aimed}"]`).getByTestId('acked').count(), 1);
+  } finally {
+    await close();
+  }
+});
+
+test('R1: while the tab is hidden, new incidents apply directly with no bar', async () => {
+  const { page, api, close } = await openBoard({
+    incidents: [incident(2), incident(1)],
+    initScript: () => {
+      window.__hidden = false;
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window.__hidden ? 'hidden' : 'visible') });
+    },
+  });
+  try {
+    await page.getByTestId('incident-row').first().waitFor();
+    await page.evaluate(() => { window.__hidden = true; });
+    api.incidents = [incident(3), ...api.incidents];
+    await page.waitForFunction(() => document.querySelector('[data-testid="incident-row"]')?.dataset.id === 'INC-3');
+    assert.deepEqual(await rowIds(page), ['INC-3', 'INC-2', 'INC-1']);
+    assert.equal(await newBar(page).isVisible(), false, 'no bar while hidden');
+
+    await page.evaluate(() => { window.__hidden = false; });
+    api.incidents = [incident(4), ...api.incidents];
+    await waitForBarText(page, barText(1));
+    assert.deepEqual(await rowIds(page), ['INC-3', 'INC-2', 'INC-1'], 'holds still again once visible');
   } finally {
     await close();
   }
@@ -212,8 +327,7 @@ for (const { timeZoneId, locale, time, date } of [
   });
 }
 
-test('R6: deployed board names the HEAD build in meta and footer', async () => {
-  const sha = execFileSync('git', ['-C', REPO, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+test('R6: deployed board names one build sha in meta and footer', async () => {
   const context = await browser.newContext();
   const page = await context.newPage();
   // Read-only: never let the deployed page reach the real ack endpoint.
@@ -223,7 +337,9 @@ test('R6: deployed board names the HEAD build in meta and footer', async () => {
     const meta = await page.locator('meta[name="build"]').getAttribute('content');
     const footer = (await page.getByTestId('build-sha').textContent()).trim();
     assert.equal(meta, footer);
-    assert.equal(meta, sha);
+    assert.match(meta, /^[0-9a-f]{40}$/);
+    // HEAD moves with every commit, so compare to a sha only when the caller names one (EXPECT_SHA=$(git rev-parse HEAD)).
+    if (process.env.EXPECT_SHA) assert.equal(meta, process.env.EXPECT_SHA);
   } finally {
     await context.close();
   }

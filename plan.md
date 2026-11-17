@@ -14,7 +14,7 @@ what just broke and takes it.
 ## Requirements
 
 - **R1** While the board is on screen, the list holds still: no row is added, removed or moved under the pointer. New
-  incidents wait behind a "N new" bar; clicking it brings them in at the top, newest first. On first load, and while
+  incidents (and incidents gone from the feed) wait behind a "N new" bar; clicking it brings them in at the top, newest first. On first load, and while
   the tab is hidden, the list shows what is current. (Product, after SCHED-4511's recording at 00:39: a new incident
   pushed the rows down and an Ack landed on the row below the one aimed at.)
 - **R2** Each incident row has an **Ack** button. Ack sends the ack (`api.ack(id)`) and marks the row acked. The acked

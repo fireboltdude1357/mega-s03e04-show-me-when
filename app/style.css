@@ -9,11 +9,12 @@ h1 { margin: 0; font-size: 22px; }
 .row.sev2 .sev { color: #a15c00; }
 .row time { color: #555; font-variant-numeric: tabular-nums; }
 footer { color: #777; font-size: 13px; }
-.row .act { justify-self: end; }
+.row .act { justify-self: end; position: relative; }
 .row button[data-testid="ack"] { font: inherit; padding: 4px 12px; border: 1px solid #1d1d1f; border-radius: 6px; background: #fff; cursor: pointer; }
 .row button[data-testid="ack"]:disabled { opacity: 0.5; cursor: default; }
 .row .acked { color: #1a7f37; font-weight: 600; }
-.row .ack-error { display: block; color: #b00020; font-size: 12px; }
+/* Out of flow, so an error never changes the row's height and moves the rows below. */
+.row .ack-error { position: absolute; right: calc(100% + 8px); top: 50%; transform: translateY(-50%); white-space: nowrap; background: #fff; padding: 0 4px; color: #b00020; font-size: 12px; }
 .loader, .empty { color: #666; }
 .status { color: #b00020; font-size: 13px; min-height: 1em; }
 /* The slot keeps its height when the bar is hidden, so the bar never pushes the list down. */

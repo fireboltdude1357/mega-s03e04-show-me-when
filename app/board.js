@@ -110,15 +110,18 @@ export function createBoard(listEl, { onAck, formatTime }) {
   }
 
   /** Updates the fields of rows already on the board and never adds, removes or moves one.
-   *  Returns how many incidents in `incidents` are not on the board yet. */
+   *  Returns how many incidents are not on the board yet (`unseen`) and how many rows left the API answer (`gone`). */
   function patch(incidents) {
+    const ids = new Set(incidents.map((i) => i.id));
     let unseen = 0;
     for (const incident of incidents) {
       const row = rows.get(incident.id);
       if (row) patchRow(row, incident);
       else unseen += 1;
     }
-    return unseen;
+    let gone = 0;
+    for (const id of rows.keys()) if (!ids.has(id)) gone += 1;
+    return { unseen, gone };
   }
 
   return { update, patch, get size() { return rows.size; } };

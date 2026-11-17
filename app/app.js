@@ -23,9 +23,12 @@ function showLatest() {
 
 /** While the board is on screen, the list holds still: new incidents wait behind the "N new" bar. */
 function hold() {
-  const unseen = board.patch(latest);
-  newBar.textContent = `${unseen} new incident${unseen === 1 ? '' : 's'}, show`;
-  newBar.hidden = unseen === 0;
+  const { unseen, gone } = board.patch(latest);
+  const parts = [];
+  if (unseen) parts.push(`${unseen} new incident${unseen === 1 ? '' : 's'}`);
+  if (gone) parts.push(`${gone} resolved`);
+  newBar.textContent = `${parts.join(', ')}, show`;
+  newBar.hidden = parts.length === 0;
 }
 
 /** Fetches the current incidents. The first success removes the loader. */
