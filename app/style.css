@@ -3,7 +3,7 @@ header, main, footer { padding: 12px 24px; }
 h1 { margin: 0; font-size: 22px; }
 .sub { margin: 2px 0 0; color: #666; }
 .list { list-style: none; margin: 0; padding: 0; max-width: 960px; }
-.row { display: grid; grid-template-columns: 90px 50px 1fr 200px auto; gap: 12px; align-items: center; min-height: 44px; padding: 0 12px; border-bottom: 1px solid #e5e5e5; background: #fff; }
+.row { display: grid; grid-template-columns: 90px 50px 1fr 200px 64px; gap: 12px; align-items: center; min-height: 44px; padding: 0 12px; border-bottom: 1px solid #e5e5e5; background: #fff; }
 .row .id { font-family: ui-monospace, monospace; }
 .row.sev1 .sev { color: #b00020; font-weight: 600; }
 .row.sev2 .sev { color: #a15c00; }
@@ -16,3 +16,7 @@ footer { color: #777; font-size: 13px; }
 .row .ack-error { display: block; color: #b00020; font-size: 12px; }
 .loader, .empty { color: #666; }
 .status { color: #b00020; font-size: 13px; min-height: 1em; }
+/* The slot keeps its height when the bar is hidden, so the bar never pushes the list down. */
+.new-slot { height: 36px; max-width: 960px; display: flex; align-items: center; }
+.new-bar { font: inherit; width: 100%; height: 30px; border: 1px solid #1d4ed8; border-radius: 6px; background: #eff6ff; color: #1d4ed8; cursor: pointer; }
+.new-bar[hidden] { display: none; }

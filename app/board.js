@@ -1,7 +1,8 @@
 /**
  * Creates the board view over the given <ul data-testid="incident-list">.
  * onAck(id) is called when an Ack button is clicked and must return a Promise (it calls api.ack).
- * update(incidents) takes the full API list, newest first, and patches rows in place by id.
+ * update(incidents) takes the full API list, newest first, and makes the list match it.
+ * patch(incidents) only refreshes rows already shown, so the list holds still under the pointer.
  */
 export function createBoard(listEl, { onAck, formatTime }) {
   const rows = new Map();
@@ -87,6 +88,7 @@ export function createBoard(listEl, { onAck, formatTime }) {
     ack(row.dataset.id);
   });
 
+  /** Makes the list match `incidents` exactly: adds, removes and reorders rows. */
   function update(incidents) {
     const ids = new Set(incidents.map((i) => i.id));
     for (const [id, row] of rows) {
@@ -107,5 +109,17 @@ export function createBoard(listEl, { onAck, formatTime }) {
     });
   }
 
-  return { update };
+  /** Updates the fields of rows already on the board and never adds, removes or moves one.
+   *  Returns how many incidents in `incidents` are not on the board yet. */
+  function patch(incidents) {
+    let unseen = 0;
+    for (const incident of incidents) {
+      const row = rows.get(incident.id);
+      if (row) patchRow(row, incident);
+      else unseen += 1;
+    }
+    return unseen;
+  }
+
+  return { update, patch, get size() { return rows.size; } };
 }
