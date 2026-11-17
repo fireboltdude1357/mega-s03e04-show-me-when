@@ -26,6 +26,7 @@ export function createBoard(listEl, { onAck, formatTime }) {
     if (!button) {
       button = el('button', { type: 'button', textContent: 'Ack' });
       button.dataset.testid = 'ack';
+      button.setAttribute('aria-label', `Ack ${row.dataset.id}`);
       cell.replaceChildren(button);
     }
     button.disabled = state === 'pending';
@@ -72,7 +73,7 @@ export function createBoard(listEl, { onAck, formatTime }) {
       ackState.delete(id);
       const row = rows.get(id);
       if (row) {
-        const error = el('span', { className: 'ack-error', textContent: 'ack failed, retry', title: String(err?.message ?? err) });
+        const error = el('span', { className: 'ack-error', role: 'alert', textContent: 'ack failed, retry', title: String(err?.message ?? err) });
         row.querySelector('.act').append(error);
       }
     }

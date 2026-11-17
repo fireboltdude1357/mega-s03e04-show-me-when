@@ -8,7 +8,7 @@ export async function fetchIncidents() {
   const url = new URL(`${API}/incidents`);
   url.searchParams.set('t', SESSION);
   if (cursor) url.searchParams.set('since', cursor);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`incidents: ${res.status} ${await res.text()}`);
   const page = await res.json();
   cursor = page.cursor;
